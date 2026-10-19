@@ -143,6 +143,15 @@ tr.paid input:not([type=checkbox]){color:var(--muted)}
 .seg button.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
 .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:99px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none}
 .toast.show{opacity:1}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px;z-index:10}
+.mbox{background:var(--card);border-radius:14px;padding:20px;max-width:440px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,.25)}
+.mbox h2{margin:0 0 6px;font-size:17px}
+.mbox p{margin:0 0 14px}
+.opt{display:block;width:100%;text-align:left;margin-top:8px;padding:12px 14px}
+.opt b{display:block;margin-bottom:2px}
+.opt span{font-size:13px;color:var(--muted)}
+.opt[data-r=all] b{color:var(--bad)}
+.opt:hover{border-color:var(--accent)}
 .toast.warn{background:#b5651d;color:#fff;border-radius:12px;max-width:calc(100% - 32px);text-align:center}
 .alerts{background:var(--warn-soft);color:var(--ink);border:1px solid var(--warn);border-radius:12px;padding:10px 14px;margin-bottom:14px;font-size:14px}
 .alerts b:first-child{color:var(--warn)}
@@ -256,6 +265,22 @@ function autoPay(){
   });
   return changed;
 }
+
+/* Mise à jour des mois créés avec une ancienne version */
+(function upgrade(){
+  var FIXES=["Nourrice","SAUR","Assurance","Total","Jardinier","Verisure","Cantine - Garderie","Taxe","Téléphone & Télés","Epargnes"];
+  var SOUS=["Restaurants","Vêtements","Travaux","Cadeaux","Coiffeur","Pharmacie","Vacances"];
+  var REN={"Course":"Courses","Essence":"Essences"};
+  Object.keys(state.months).forEach(function(k){
+    var m=state.months[k];
+    if(!m.fixes||!m.fixes.length) m.fixes=FIXES.map(function(n){return {nom:n,montant:0,jour:"",paye:false};});
+    (m.budgets||[]).forEach(function(b){
+      if(REN[b.cat]&&!m.budgets.some(function(x){return x.cat===REN[b.cat];})){ var o=b.cat; b.cat=REN[o]; (m.depenses||[]).forEach(function(d){ if(d.cat===o) d.cat=b.cat; }); }
+      if(b.cat==="Autres"&&(!b.sous||!b.sous.length)) b.sous=SOUS.slice();
+    });
+    if(!m.budgets.some(function(b){return b.cat==="Autres";})) m.budgets.push({cat:"Autres",budget:0,sous:SOUS.slice()});
+  });
+})();
 autoPay();
 save();
 
@@ -452,6 +477,7 @@ function renderDep(m){
     }).join("");
   }
   h+='</div>';
+  h+='<div class="row" style="justify-content:flex-end">'+'<button class="ghost" data-act="reset-open">↺ Réinitialiser '+labelKey(ui.month)+'</button>'+'</div>';
   return h;
 }
 function itemRow(d,showCat){
@@ -510,7 +536,7 @@ function afterDep(m){
     var b=e.target.closest("[data-cat]"); if(!b) return; manual=true;
     var c=b.dataset.cat, so=b.dataset.sous||null;
     sel(c,so);
-    if(c===FIX&&!so) hint.textContent="Choisis laquelle juste en dessous.";
+    if(c===FIX&&!so) hint.textContent=m.fixes.length?"Choisis laquelle juste en dessous.":"Aucune charge fixe pour ce mois : ajoute-les dans « Budget du mois ».";
     else if(c===FIX){
       var f=m.fixes.filter(function(x){return x.nom===so;})[0], reste=f?num(f.montant)-fixPaid(m,so):0;
       hint.textContent="Charge fixe « "+so+" »"+(f&&num(f.montant)?" : prévu "+eur(f.montant)+", déjà réglé "+eur(fixPaid(m,so)):"")+".";
@@ -564,7 +590,7 @@ function renderBud(m){
   ["fixes","budgets","revenus","credits","epargne","rembs"].forEach(function(s){ h+=secCard(m,s); });
   h+='<div class="card"><h2>Notes du mois</h2><textarea data-notes placeholder="Soldes relevés, remboursements attendus, dépenses exceptionnelles…">'+esc(m.notes)+'</textarea></div>';
   h+='</div>';
-  h+='<div class="row" style="justify-content:flex-end"><button class="ghost" data-act="del-month" style="color:var(--bad)">Supprimer '+labelKey(ui.month)+'</button></div>';
+  h+='<div class="row" style="justify-content:flex-end">'+'<button class="ghost" data-act="reset-open">↺ Réinitialiser '+labelKey(ui.month)+'</button>'+'<button class="ghost" data-act="del-month" style="color:var(--bad)">Supprimer '+labelKey(ui.month)+'</button></div>';
   return h;
 }
 function secCard(m,s){
@@ -715,6 +741,7 @@ main.addEventListener("click",function(e){
       ui.tab="bud"; saveUI();
       save(); render();
     }
+    else if(a==="reset-open"){ openReset(); }
     else if(a==="del-month"){
       if(confirm("Supprimer définitivement "+labelKey(ui.month)+" et toutes ses dépenses ?")){ delete state.months[ui.month]; save(); render(); toast("Mois supprimé"); }
     }
@@ -760,6 +787,37 @@ main.addEventListener("change",function(e){
   if(el.id==="sp"){ m.soldePrec=el.value.trim()===""?"":Math.round(num(el.value)*100)/100; save(); render(); return; }
   if(el.id==="np"){ state.personnes=Math.max(1,parseInt(el.value,10)||2); save(); render(); return; }
 });
+
+/* Réinitialiser le mois */
+function openReset(){
+  var m=M(); if(!m) return;
+  var nd=m.depenses.length, lbl=labelKey(ui.month);
+  var ov=document.createElement("div"); ov.className="modal";
+  ov.innerHTML='<div class="mbox" role="dialog" aria-modal="true" aria-labelledby="rt"><h2 id="rt">Réinitialiser '+lbl+'</h2>'+
+    '<p class="muted">Les catégories, les charges fixes et leurs jours de prélèvement sont toujours conservés.</p>'+
+    '<button class="opt" data-r="dep"><b>Effacer les dépenses</b><span>'+(nd===0?'Aucune dépense ce mois-ci. Décoche les charges fixes payées.':(nd===1?'Supprime la dépense du mois':'Supprime les '+nd+' dépenses du mois')+' et décoche les charges fixes payées.')+' Les montants prévus et les budgets restent.</span></button>'+
+    '<button class="opt" data-r="all"><b>Tout remettre à zéro</b><span>Supprime les dépenses et les notes, et met tous les montants (revenus, charges, crédits, budgets…) à 0 €.</span></button>'+
+    '<div class="row" style="justify-content:flex-end;margin-top:12px"><button data-r="cancel">Annuler</button></div></div>';
+  document.body.appendChild(ov);
+  var close=function(){ ov.remove(); document.removeEventListener("keydown",esc1); };
+  var esc1=function(e){ if(e.key==="Escape") close(); };
+  document.addEventListener("keydown",esc1);
+  ov.addEventListener("click",function(e){
+    if(e.target===ov){ close(); return; }
+    var b=e.target.closest("[data-r]"); if(!b) return;
+    var r=b.dataset.r; if(r==="cancel"){ close(); return; }
+    m.depenses=[];
+    PRELEV.forEach(function(sec){ (m[sec]||[]).forEach(function(x){ x.paye=false; x.manuel=false; }); });
+    if(r==="all"){
+      ["revenus","credits","epargne","fixes","rembs"].forEach(function(sec){ (m[sec]||[]).forEach(function(x){ x.montant=0; if("virement" in x) x.virement=0; }); });
+      m.budgets.forEach(function(b2){ b2.budget=0; });
+      m.notes=""; m.soldePrec="";
+    }
+    ui.editId=null; save(); close(); render();
+    toast(r==="all"?lbl+" remis à zéro":"Dépenses effacées ("+lbl+")");
+  });
+  ov.querySelector("[data-r=dep]").focus();
+}
 
 /* Sauvegarde / restauration */
 function download(name,content,type){
