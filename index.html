@@ -274,10 +274,22 @@ function autoPay(){
   return changed;
 }
 
+/* Ajout de « Prêts » et « Autres » aux mois existants (une seule fois par mois) */
+function maj2(m){
+  if(!m||m.maj2) return false;
+  m.fixes=m.fixes||[];
+  if(!m.fixes.some(function(f){return f.nom==="Prêts";})){
+    var i=-1; m.fixes.forEach(function(f,j){ if(f.nom==="Epargnes") i=j; });
+    var row={nom:"Prêts",montant:0,jour:"",paye:false};
+    if(i>=0) m.fixes.splice(i,0,row); else m.fixes.push(row);
+  }
+  (m.budgets||[]).forEach(function(b){ if(b.cat==="Autres"){ b.sous=b.sous||[]; if(b.sous.indexOf("Autres")<0) b.sous.push("Autres"); } });
+  m.maj2=true; return true;
+}
 /* Mise à jour des mois créés avec une ancienne version */
 (function upgrade(){
-  var FIXES=["Nourrice","SAUR","Assurance","Total","Jardinier","Verisure","Cantine - Garderie","Taxe","Téléphone & Télés","Epargnes"];
-  var SOUS=["Restaurants","Vêtements","Travaux","Cadeaux","Coiffeur","Pharmacie","Vacances"];
+  var FIXES=["Nourrice","SAUR","Assurance","Total","Jardinier","Verisure","Cantine - Garderie","Taxe","Téléphone & Télés","Prêts","Epargnes"];
+  var SOUS=["Restaurants","Vêtements","Travaux","Cadeaux","Coiffeur","Pharmacie","Vacances","Autres"];
   var REN={"Course":"Courses","Essence":"Essences"};
   Object.keys(state.months).forEach(function(k){
     var m=state.months[k];
@@ -287,6 +299,7 @@ function autoPay(){
       if(b.cat==="Autres"&&(!b.sous||!b.sous.length)) b.sous=SOUS.slice();
     });
     if(!m.budgets.some(function(b){return b.cat==="Autres";})) m.budgets.push({cat:"Autres",budget:0,sous:SOUS.slice()});
+    maj2(m);
   });
 })();
 autoPay();
@@ -745,9 +758,9 @@ main.addEventListener("click",function(e){
         revenus:[{nom:"Salaire 1",montant:0,virement:0,direct:false},{nom:"Salaire 2",montant:0,virement:0,direct:false},{nom:"CAF",montant:0,virement:0,direct:true}],
         credits:L(["Immo 1","Immo 2","Voiture"],{jour:"",paye:false}),
         epargne:[],
-        fixes:L(["Nourrice","SAUR","Assurance","Total","Jardinier","Verisure","Cantine - Garderie","Taxe","Téléphone & Télés","Epargnes"],{jour:"",paye:false}),
-        budgets:[{cat:"Courses",budget:0,sous:[]},{cat:"Essences",budget:0,sous:[]},{cat:"Autres",budget:0,sous:["Restaurants","Vêtements","Travaux","Cadeaux","Coiffeur","Pharmacie","Vacances"]}],
-        rembs:[{nom:"Nourrice",montant:0}],depenses:[],notes:"",soldePrec:""};
+        fixes:L(["Nourrice","SAUR","Assurance","Total","Jardinier","Verisure","Cantine - Garderie","Taxe","Téléphone & Télés","Prêts","Epargnes"],{jour:"",paye:false}),
+        budgets:[{cat:"Courses",budget:0,sous:[]},{cat:"Essences",budget:0,sous:[]},{cat:"Autres",budget:0,sous:["Restaurants","Vêtements","Travaux","Cadeaux","Coiffeur","Pharmacie","Vacances","Autres"]}],
+        rembs:[{nom:"Nourrice",montant:0}],depenses:[],notes:"",soldePrec:"",maj2:true};
       ui.tab="bud"; saveUI();
       save(); render();
     }
@@ -1056,17 +1069,19 @@ function fbStart(){
       var remote={months:{},supprimes:state.supprimes||{},moisSupprimes:state.moisSupprimes||{}};
       snap.docs.forEach(function(d){ remote.months[d.id]=d.data(); fb.last[d.id]=JSON.stringify(d.data()); });
       state.months=mergeStates(remote,state).months;
+      Object.keys(state.months).forEach(function(k){ maj2(state.months[k]); });
       try{ localStorage.setItem(STORE,JSON.stringify(state)); }catch(e){}
       softRender2(); fbPush(); fbOk(); return;
     }
-    var seen={}, changed=false;
+    var seen={}, changed=false, needPush=false;
     snap.docs.forEach(function(d){
       seen[d.id]=1; if(fb.busy[d.id]) return;
       var j=JSON.stringify(d.data());
-      if(fb.last[d.id]!==j){ fb.last[d.id]=j; state.months[d.id]=JSON.parse(j); changed=true; }
+      if(fb.last[d.id]!==j){ fb.last[d.id]=j; state.months[d.id]=JSON.parse(j); if(maj2(state.months[d.id])) needPush=true; changed=true; }
     });
     Object.keys(fb.last).forEach(function(k){ if(!seen[k]&&fb.last[k]!=null&&!fb.busy[k]){ fb.last[k]=null; delete state.months[k]; changed=true; } });
     if(changed){ try{ localStorage.setItem(STORE,JSON.stringify(state)); }catch(e){} softRender2(); }
+    if(needPush) fbPush();
     fbOk();
   },fbError));
 }
