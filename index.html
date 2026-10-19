@@ -143,6 +143,12 @@ tr.paid input:not([type=checkbox]){color:var(--muted)}
 .seg button.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
 .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:99px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none}
 .toast.show{opacity:1}
+.fs{font-size:13px}
+.mbox textarea{min-height:140px;font:12px/1.4 ui-monospace,Menlo,monospace}
+.mbox code{font-size:12px;background:var(--chip);padding:1px 5px;border-radius:4px}
+.fs.ok{color:var(--good);border-color:var(--good)}
+.fs.wait{color:var(--accent)}
+.fs.off{color:var(--muted)}
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px;z-index:10}
 .mbox{background:var(--card);border-radius:14px;padding:20px;max-width:440px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,.25)}
 .mbox h2{margin:0 0 6px;font-size:17px}
@@ -188,6 +194,8 @@ details summary{cursor:pointer;font-size:13px;padding:4px 0}
       <button class="ghost" id="today">Aujourd'hui</button>
     </div>
     <div class="row">
+      <button id="fb" class="fs off">Synchronisation</button>
+      <button id="fs" class="fs" title="Partager les données avec un fichier dans un dossier synchronisé (Drive, OneDrive, Dropbox)" hidden></button>
       <button id="exp" title="Télécharger une sauvegarde de toutes les données">Sauvegarder</button>
       <button id="imp" title="Restaurer depuis une sauvegarde">Restaurer</button>
       <input type="file" id="impfile" accept=".json,application/json" hidden>
@@ -326,6 +334,7 @@ function matchSub(m,lib){
   }); });
   return best;
 }
+function tomb(id){ state.supprimes=state.supprimes||{}; state.supprimes[id]=Date.now(); }
 function defaultDate(){ return ui.month===curKey()?todayISO():ui.month+"-01"; }
 function frequentes(){
   var map={};
@@ -690,7 +699,7 @@ main.addEventListener("click",function(e){
   if((el=e.target.closest("[data-view]"))){ ui.view=el.dataset.view; saveUI(); render(); return; }
   if((el=e.target.closest("[data-del]"))){
     var m=M(), d=m.depenses.filter(function(x){return x.id===el.dataset.del;})[0];
-    if(d&&confirm("Supprimer "+eur(d.montant)+(d.lib?" ("+d.lib+")":"")+" ?")){ m.depenses=m.depenses.filter(function(x){return x!==d;}); if(ui.editId===d.id) ui.editId=null; save(); render(); toast("Dépense supprimée"); }
+    if(d&&confirm("Supprimer "+eur(d.montant)+(d.lib?" ("+d.lib+")":"")+" ?")){ tomb(d.id); m.depenses=m.depenses.filter(function(x){return x!==d;}); if(ui.editId===d.id) ui.editId=null; save(); render(); toast("Dépense supprimée"); }
     return;
   }
   if((el=e.target.closest("[data-redo]"))){
@@ -724,7 +733,8 @@ main.addEventListener("click",function(e){
   if((el=e.target.closest("[data-act]"))){
     var a=el.dataset.act;
     if(a==="cancel-edit"){ ui.editId=null; render(); }
-    else if(a==="create-copy"){
+    else if(a==="create-copy"||a==="create-empty"){ if(state.moisSupprimes) delete state.moisSupprimes[ui.month]; }
+    if(a==="create-copy"){
       var src=JSON.parse(JSON.stringify(state.months[el.dataset.src]));
       src.depenses=[]; src.notes=""; src.soldePrec=""; PRELEV.forEach(function(s){ (src[s]||[]).forEach(function(f){ f.paye=false; f.manuel=false; }); });
       state.months[ui.month]=src; save(); render(); toast(labelKey(ui.month)+" créé");
@@ -743,7 +753,7 @@ main.addEventListener("click",function(e){
     }
     else if(a==="reset-open"){ openReset(); }
     else if(a==="del-month"){
-      if(confirm("Supprimer définitivement "+labelKey(ui.month)+" et toutes ses dépenses ?")){ delete state.months[ui.month]; save(); render(); toast("Mois supprimé"); }
+      if(confirm("Supprimer définitivement "+labelKey(ui.month)+" et toutes ses dépenses ?")){ state.moisSupprimes=state.moisSupprimes||{}; state.moisSupprimes[ui.month]=Date.now(); delete state.months[ui.month]; save(); render(); toast("Mois supprimé"); }
     }
     else if(a==="csv"){
       var m3=M(), lines=[["Date","Catégorie","Sous-catégorie","Libellé","Montant"]];
@@ -806,6 +816,7 @@ function openReset(){
     if(e.target===ov){ close(); return; }
     var b=e.target.closest("[data-r]"); if(!b) return;
     var r=b.dataset.r; if(r==="cancel"){ close(); return; }
+    m.depenses.forEach(function(x){ tomb(x.id); });
     m.depenses=[];
     PRELEV.forEach(function(sec){ (m[sec]||[]).forEach(function(x){ x.paye=false; x.manuel=false; }); });
     if(r==="all"){
@@ -838,6 +849,305 @@ document.getElementById("impfile").onchange=function(e){
   };
   r.readAsText(f);
 };
+
+
+/* ---------- Fichier partagé (dossier Drive / OneDrive / Dropbox) ---------- */
+var fsync={ok:false, handle:null, live:false, lastMod:0, lastText:"", timer:null, writing:false, dirty:false};
+function idb(op,val){
+  return new Promise(function(res){
+    try{
+      var rq=indexedDB.open("paurick-budget-fichier",1);
+      rq.onupgradeneeded=function(){ rq.result.createObjectStore("kv"); };
+      rq.onerror=function(){ res(null); };
+      rq.onsuccess=function(){
+        try{ var tx=rq.result.transaction("kv",op==="get"?"readonly":"readwrite"), st=tx.objectStore("kv");
+          var r2=op==="get"?st.get(STORE):(op==="del"?st.delete(STORE):st.put(val,STORE));
+          r2.onsuccess=function(){ res(op==="get"?r2.result:true); }; r2.onerror=function(){ res(null); };
+        }catch(e){ res(null); }
+      };
+    }catch(e){ res(null); }
+  });
+}
+function fsChip(st,txt){
+  var b=document.getElementById("fs"); if(!b) return;
+  b.hidden=!fsync.ok; b.className="fs "+st; b.textContent=txt;
+}
+/* Fusion : "base" garde ses valeurs, les dépenses des deux côtés sont réunies */
+function mergeStates(base,other){
+  var out=JSON.parse(JSON.stringify(base));
+  out.supprimes=Object.assign({},other.supprimes||{},base.supprimes||{});
+  out.moisSupprimes=Object.assign({},other.moisSupprimes||{},base.moisSupprimes||{});
+  out.months=out.months||{};
+  Object.keys(other.months||{}).forEach(function(k){
+    if(!out.months[k]){ if(!out.moisSupprimes[k]) out.months[k]=JSON.parse(JSON.stringify(other.months[k])); return; }
+    var ids={}; out.months[k].depenses.forEach(function(d){ ids[d.id]=1; });
+    (other.months[k].depenses||[]).forEach(function(d){ if(!ids[d.id]) out.months[k].depenses.push(JSON.parse(JSON.stringify(d))); });
+  });
+  Object.keys(out.months).forEach(function(k){
+    if(out.moisSupprimes[k]&&!(base.months&&base.months[k])) delete out.months[k];
+    out.months[k]&&(out.months[k].depenses=out.months[k].depenses.filter(function(d){ return !out.supprimes[d.id]; }));
+  });
+  return out;
+}
+function fsRead(){ return fsync.handle.getFile().then(function(f){ return f.text().then(function(t){ return {t:t,mod:f.lastModified}; }); }); }
+function fsParse(t){ try{ var d=JSON.parse(t); return d&&d.months?d:null; }catch(e){ return null; } }
+function fsWrite(){
+  if(!fsync.live) return;
+  if(fsync.writing){ fsync.dirty=true; return; }
+  fsync.writing=true; fsync.dirty=false; fsChip("wait","Enregistrement…");
+  fsRead().then(function(r){
+    var remote=fsParse(r.t);
+    var merged=remote?mergeStates(state,remote):state;
+    var text=JSON.stringify(merged);
+    var changedLocal=JSON.stringify(state)!==text;
+    state=merged;
+    return fsync.handle.createWritable().then(function(w){ return w.write(text).then(function(){ return w.close(); }); }).then(function(){
+      fsync.lastText=text; return fsync.handle.getFile();
+    }).then(function(f){ fsync.lastMod=f.lastModified; try{ localStorage.setItem(STORE,text); }catch(e){} if(changedLocal) softRender2(); });
+  }).then(function(){ fsChip("ok","✓ Fichier partagé"); }, function(e){ fsFail(e); })
+  .then(function(){ fsync.writing=false; if(fsync.dirty) fsWrite(); });
+}
+function fsPoll(){
+  if(!fsync.live||fsync.writing) return;
+  fsync.handle.getFile().then(function(f){
+    if(f.lastModified===fsync.lastMod) return;
+    return f.text().then(function(t){
+      fsync.lastMod=f.lastModified;
+      if(t===fsync.lastText) return;
+      var remote=fsParse(t); if(!remote) return;
+      var merged=mergeStates(remote,state);
+      fsync.lastText=t; state=merged;
+      try{ localStorage.setItem(STORE,JSON.stringify(state)); }catch(e){}
+      softRender2();
+      if(JSON.stringify(merged)!==t) fsWrite();
+    });
+  }, function(e){ fsFail(e); });
+}
+function fsFail(e){
+  if(e&&(e.name==="NotAllowedError"||e.name==="SecurityError")){ fsync.live=false; fsChip("off","Reconnecter le fichier"); }
+  else if(e&&e.name==="NotFoundError"){ fsync.live=false; fsChip("off","Fichier introuvable"); }
+  else fsChip("off","Fichier indisponible");
+}
+function fsStart(h){
+  fsync.handle=h; fsync.live=true;
+  clearInterval(fsync.timer); fsync.timer=setInterval(fsPoll,4000);
+  fsChip("ok","✓ Fichier partagé");
+  fsWrite();
+}
+function softRender2(){
+  var a=document.activeElement;
+  var busy=a&&main.contains(a)&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)&&(a.value||ui.tab!=="dep");
+  if(busy||document.querySelector(".modal")){ fsync.pending=true; return; }
+  fsync.pending=false; render();
+}
+main.addEventListener("focusout",function(){ if(fsync.pending) setTimeout(function(){ if(fsync.pending) softRender2(); },80); });
+var _saveLocal=save;
+save=function(){ _saveLocal(); if(fsync.live){ clearTimeout(fsync.wt); fsync.wt=setTimeout(fsWrite,400); } };
+function fsDialog(){
+  if(!fsync.ok){ alert("Le fichier partagé fonctionne avec Google Chrome ou Microsoft Edge sur ordinateur."); return; }
+  var ov=document.createElement("div"); ov.className="modal";
+  var linked=!!fsync.handle;
+  ov.innerHTML='<div class="mbox" role="dialog" aria-modal="true"><h2>Fichier partagé</h2>'+
+    '<p class="muted">Choisis un fichier de données dans un dossier synchronisé sur vos deux ordinateurs (Google Drive, OneDrive, Dropbox…). Chacun ouvre Paurick budget sur son ordinateur et lie le <b>même</b> fichier : les changements de l\'un apparaissent chez l\'autre en quelques secondes.</p>'+
+    (linked?'<p class="muted" style="margin-top:-6px">Lié à : <b>'+esc(fsync.handle.name)+'</b></p>'+(fsync.live?'':'<button class="opt" data-f="perm"><b>Reconnecter ce fichier</b><span>Le navigateur redemande l\'autorisation à chaque ouverture.</span></button>'):'')+
+    '<button class="opt" data-f="new"><b>Créer le fichier</b><span>À faire une seule fois, par le premier d\'entre vous. Range-le dans le dossier partagé.</span></button>'+
+    '<button class="opt" data-f="open"><b>Ouvrir un fichier existant</b><span>Pour l\'autre personne : choisis le fichier déjà créé dans le dossier partagé. Ses données et les tiennes sont fusionnées.</span></button>'+
+    (linked?'<button class="opt" data-f="unlink"><b>Délier</b><span>La page n\'utilise plus le fichier (tes données restent sur cet ordinateur).</span></button>':'')+
+    '<div class="row" style="justify-content:flex-end;margin-top:12px"><button data-f="cancel">Fermer</button></div></div>';
+  document.body.appendChild(ov);
+  var close=function(){ ov.remove(); };
+  ov.addEventListener("click",function(e){
+    if(e.target===ov){ close(); return; }
+    var b=e.target.closest("[data-f]"); if(!b) return; var f=b.dataset.f;
+    if(f==="cancel"){ close(); return; }
+    if(f==="perm"){ fsync.handle.requestPermission({mode:"readwrite"}).then(function(r){ if(r==="granted"){ close(); fsStart(fsync.handle); toast("Fichier reconnecté"); } }); return; }
+    if(f==="unlink"){ fsync.live=false; fsync.handle=null; clearInterval(fsync.timer); idb("del"); fsChip("off","Fichier partagé"); close(); toast("Fichier délié"); return; }
+    var pick=f==="new"
+      ? window.showSaveFilePicker({suggestedName:"paurick-budget-donnees.json",types:[{description:"Données Paurick budget",accept:{"application/json":[".json"]}}]})
+      : window.showOpenFilePicker({types:[{description:"Données Paurick budget",accept:{"application/json":[".json"]}}]}).then(function(a){ return a[0]; });
+    pick.then(function(h){
+      return h.requestPermission({mode:"readwrite"}).then(function(r){
+        if(r!=="granted") throw {name:"NotAllowedError"};
+        if(f==="open") return h.getFile().then(function(x){ return x.text(); }).then(function(t){
+          var d=fsParse(t); if(!d){ alert("Ce fichier n'est pas un fichier de données Paurick budget."); throw {name:"Abort"}; }
+          state=mergeStates(d,state); fsync.lastText=""; return h;
+        });
+        if(f==="new") fsync.lastText="";
+        return h;
+      });
+    }).then(function(h){ idb("set",h); close(); fsStart(h); render(); toast("Fichier lié : "+h.name); },
+      function(e){ if(e&&e.name!=="AbortError"&&e.name!=="Abort") toast("Impossible d'utiliser ce fichier"); });
+  });
+}
+document.getElementById("fs").onclick=fsDialog;
+if(fsync.ok){
+  fsChip("off","Fichier partagé");
+  idb("get").then(function(h){
+    if(!h||!h.queryPermission) return;
+    fsync.handle=h;
+    h.queryPermission({mode:"readwrite"}).then(function(p){
+      if(p==="granted") fsStart(h); else fsChip("off","Reconnecter le fichier");
+    });
+  });
+}
+
+
+/* ---------- Synchronisation Firebase ---------- */
+var FB_CONFIG = {
+  apiKey: "AIzaSyCLjCepr6TyFV1kHefcwRDanJjyX5pcPKU",
+  authDomain: "paurick-budget.firebaseapp.com",
+  projectId: "paurick-budget",
+  storageBucket: "paurick-budget.firebasestorage.app",
+  messagingSenderId: "858101384833",
+  appId: "1:858101384833:web:d99e3994725417141a2f80"
+};
+var FB_V="10.12.2";
+var fb={mods:null, app:null, auth:null, db:null, user:null, last:{}, busy:{}, again:{}, ready:false, unsub:[], metaLast:null, err:false};
+function fbCfg(){ if(FB_CONFIG) return FB_CONFIG; try{ return JSON.parse(localStorage.getItem(STORE+"-firebase")||"null"); }catch(e){ return null; } }
+function fbParseCfg(t){
+  var o={}, re=/["']?(apiKey|authDomain|projectId|storageBucket|messagingSenderId|appId|measurementId)["']?\s*:\s*["']([^"']+)["']/g, m;
+  while((m=re.exec(t))) o[m[1]]=m[2];
+  return (o.apiKey&&o.projectId&&o.appId)?o:null;
+}
+function fbChip(st,txt){ var b=document.getElementById("fb"); if(b){ b.className="fs "+st; b.textContent=txt; } }
+function fbLoad(){
+  if(fb.mods) return Promise.resolve(fb.mods);
+  var base="https://www.gstatic.com/firebasejs/"+FB_V+"/";
+  return Promise.all([import(base+"firebase-app.js"),import(base+"firebase-auth.js"),import(base+"firebase-firestore.js")])
+    .then(function(a){ fb.mods={app:a[0],auth:a[1],fs:a[2]}; return fb.mods; });
+}
+function fbInit(){
+  var cfg=fbCfg(); if(!cfg){ fbChip("off","Configurer la synchro"); return; }
+  fbChip("wait","Connexion…");
+  fbLoad().then(function(M){
+    if(!fb.app){ fb.app=M.app.initializeApp(cfg); fb.auth=M.auth.getAuth(fb.app); fb.db=M.fs.getFirestore(fb.app); }
+    M.auth.onAuthStateChanged(fb.auth,function(u){
+      fb.user=u;
+      if(u) fbStart(); else { fbStop(); fbChip("off","Se connecter"); }
+    });
+  }, function(){ fbChip("off","Hors ligne"); toast("Impossible de joindre Firebase (connexion Internet ?)",true); });
+}
+function fbStop(){ fb.unsub.forEach(function(f){ try{f();}catch(e){} }); fb.unsub=[]; fb.ready=false; fb.last={}; fb.metaLast=null; }
+function fbIdle(){ for(var k in fb.busy) if(fb.busy[k]) return false; return true; }
+function fbOk(){ if(fbIdle()&&!fb.err) fbChip("ok","✓ Synchronisé"); }
+function fbError(e){
+  var c=(e&&e.code)||"";
+  fb.err=true;
+  if(c.indexOf("permission-denied")>=0){ fbChip("off","Accès refusé"); toast("Ce compte n'a pas accès aux données : vérifie les règles Firebase (adresses e-mail).",true); }
+  else { fbChip("off","Hors ligne"); setTimeout(function(){ fb.err=false; fbPush(); },5000); }
+}
+function fbStart(){
+  var M=fb.mods.fs; fbStop(); fb.err=false;
+  fbChip("wait","Synchronisation…");
+  fb.unsub.push(M.onSnapshot(M.doc(fb.db,"meta","settings"),function(d){
+    if(!d.exists()) return;
+    var x=d.data(); fb.metaLast=JSON.stringify(x);
+    var changed=false;
+    if(x.personnes&&x.personnes!==state.personnes){ state.personnes=x.personnes; changed=true; }
+    state.supprimes=Object.assign({},x.supprimes||{},state.supprimes||{});
+    state.moisSupprimes=Object.assign({},x.moisSupprimes||{},state.moisSupprimes||{});
+    Object.keys(state.months).forEach(function(k){ var m=state.months[k], n=m.depenses.length; m.depenses=m.depenses.filter(function(d2){ return !state.supprimes[d2.id]; }); if(m.depenses.length!==n) changed=true; });
+    if(changed){ try{ localStorage.setItem(STORE,JSON.stringify(state)); }catch(e){} softRender2(); }
+  },fbError));
+  fb.unsub.push(M.onSnapshot(M.collection(fb.db,"months"),function(snap){
+    if(!fb.ready){
+      if(snap.metadata&&snap.metadata.fromCache) return;
+      fb.ready=true;
+      var remote={months:{},supprimes:state.supprimes||{},moisSupprimes:state.moisSupprimes||{}};
+      snap.docs.forEach(function(d){ remote.months[d.id]=d.data(); fb.last[d.id]=JSON.stringify(d.data()); });
+      var merged=mergeStates(remote,state);
+      state.months=merged.months;
+      try{ localStorage.setItem(STORE,JSON.stringify(state)); }catch(e){}
+      softRender2(); fbPush(); fbOk(); return;
+    }
+    var seen={}, changed=false;
+    snap.docs.forEach(function(d){
+      seen[d.id]=1; if(fb.busy[d.id]) return;
+      var j=JSON.stringify(d.data());
+      if(fb.last[d.id]!==j){ fb.last[d.id]=j; state.months[d.id]=JSON.parse(j); changed=true; }
+    });
+    Object.keys(fb.last).forEach(function(k){ if(!seen[k]&&fb.last[k]!=null&&!fb.busy[k]){ fb.last[k]=null; delete state.months[k]; changed=true; } });
+    if(changed){ try{ localStorage.setItem(STORE,JSON.stringify(state)); }catch(e){} softRender2(); }
+    fbOk();
+  },fbError));
+}
+function fbPushMonth(k){
+  if(fb.busy[k]){ fb.again[k]=true; return; }
+  fb.busy[k]=true; fbChip("wait","Envoi…");
+  var M=fb.mods.fs, ref=M.doc(fb.db,"months",k), json=null;
+  M.getDoc(ref).then(function(r){
+    var m=state.months[k];
+    if(m&&r.exists()){
+      var ids={}, added=false, sup=state.supprimes||{};
+      m.depenses.forEach(function(d){ ids[d.id]=1; });
+      ((r.data().depenses)||[]).forEach(function(d){ if(!ids[d.id]&&!sup[d.id]){ m.depenses.push(JSON.parse(JSON.stringify(d))); added=true; } });
+      if(added) softRender2();
+    }
+  }).then(function(){
+    var m=state.months[k]; json=m?JSON.stringify(m):null;
+    return m?M.setDoc(ref,JSON.parse(json)):M.deleteDoc(ref);
+  }).then(function(){ fb.last[k]=json; fb.err=false; }, fbError)
+  .then(function(){ fb.busy[k]=false; if(fb.again[k]){ fb.again[k]=false; fbPushMonth(k); } else fbOk(); });
+}
+function fbPush(){
+  if(!fb.ready||!fb.user||!fb.mods) return;
+  var keys={}; Object.keys(state.months).forEach(function(k){keys[k]=1;}); Object.keys(fb.last).forEach(function(k){keys[k]=1;});
+  Object.keys(keys).forEach(function(k){ var j=state.months[k]?JSON.stringify(state.months[k]):null; if(j!==(fb.last[k]||null)) fbPushMonth(k); });
+  var meta={personnes:state.personnes||2, supprimes:state.supprimes||{}, moisSupprimes:state.moisSupprimes||{}};
+  var mj=JSON.stringify(meta);
+  if(mj!==fb.metaLast){ var M=fb.mods.fs; M.setDoc(M.doc(fb.db,"meta","settings"),meta,{merge:true}).then(function(){ fb.metaLast=mj; },fbError); }
+}
+var _saveBeforeFb=save;
+save=function(){ _saveBeforeFb(); fbPush(); };
+function fbDialog(){
+  var cfg=fbCfg();
+  var ov=document.createElement("div"); ov.className="modal";
+  var h='<div class="mbox" role="dialog" aria-modal="true"><h2>Synchronisation</h2>';
+  if(!cfg||ov._cfgEdit){
+    h+='<p class="muted">Colle ici la configuration de ton projet Firebase (le bloc <code>firebaseConfig</code> donné par la console Firebase).</p>'+
+       '<textarea id="fbcfg" placeholder="const firebaseConfig = { apiKey: &quot;…&quot;, … };"></textarea>'+
+       '<div class="row" style="justify-content:flex-end;margin-top:12px"><button data-b="cancel">Annuler</button><button class="primary" data-b="savecfg">Enregistrer</button></div>';
+  } else if(!fb.user){
+    h+='<p class="muted">Connecte-toi avec ton compte (créé dans Firebase → Authentication).</p>'+
+       '<form id="fblogin" autocomplete="on"><label class="muted" for="fbe">E-mail</label><input id="fbe" type="email" autocomplete="username" required>'+
+       '<label class="muted" for="fbp" style="display:block;margin-top:8px">Mot de passe</label><input id="fbp" type="password" autocomplete="current-password" required>'+
+       '<p id="fberr" class="neg" style="margin:8px 0 0;font-size:13px"></p>'+
+       '<div class="row" style="justify-content:space-between;margin-top:12px">'+(FB_CONFIG?'<span></span>':'<button type="button" class="ghost" data-b="editcfg">Changer la configuration</button>')+'<span class="row"><button type="button" data-b="cancel">Annuler</button><button class="primary" type="submit">Se connecter</button></span></div></form>';
+  } else {
+    h+='<p>Connecté : <b>'+esc(fb.user.email||"")+'</b></p><p class="muted">Tout ce que vous saisissez est partagé entre vos appareils.</p>'+
+       '<div class="row" style="justify-content:space-between;margin-top:12px"><button class="ghost" data-b="logout" style="color:var(--bad)">Se déconnecter</button><button data-b="cancel">Fermer</button></div>';
+  }
+  ov.innerHTML=h+'</div>'; document.body.appendChild(ov);
+  var close=function(){ ov.remove(); if(fsync.pending) softRender2(); };
+  var f=ov.querySelector("#fblogin");
+  if(f){ setTimeout(function(){ ov.querySelector("#fbe").focus(); },30);
+    f.addEventListener("submit",function(e){
+      e.preventDefault();
+      var err=ov.querySelector("#fberr"); err.textContent="";
+      fbLoad().then(function(M){
+        return M.auth.signInWithEmailAndPassword(fb.auth,ov.querySelector("#fbe").value.trim(),ov.querySelector("#fbp").value);
+      }).then(function(){ close(); toast("Connecté"); }, function(e2){
+        var c=(e2&&e2.code)||"";
+        err.textContent=/invalid-credential|wrong-password|user-not-found|invalid-email/.test(c)?"E-mail ou mot de passe incorrect.":(/network/.test(c)?"Pas de connexion Internet.":"Connexion impossible ("+c+").");
+      });
+    });
+  }
+  ov.addEventListener("click",function(e){
+    if(e.target===ov){ close(); return; }
+    var b=e.target.closest("[data-b]"); if(!b) return; var a=b.dataset.b;
+    if(a==="cancel") close();
+    else if(a==="editcfg"){ close(); try{ localStorage.removeItem(STORE+"-firebase"); }catch(x){} if(!FB_CONFIG){ location.reload(); } }
+    else if(a==="logout"){ fb.mods.auth.signOut(fb.auth).then(function(){ close(); toast("Déconnecté"); }); }
+    else if(a==="savecfg"){
+      var c=fbParseCfg(ov.querySelector("#fbcfg").value);
+      if(!c){ alert("Je ne trouve pas apiKey, projectId et appId dans ce texte. Copie tout le bloc firebaseConfig."); return; }
+      try{ localStorage.setItem(STORE+"-firebase",JSON.stringify(c)); }catch(x){}
+      close(); fbInit(); setTimeout(fbDialog,400);
+    }
+  });
+}
+document.getElementById("fb").onclick=fbDialog;
+fbInit();
 
 render();
 })();
