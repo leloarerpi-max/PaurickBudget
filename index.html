@@ -194,7 +194,7 @@ details summary{cursor:pointer;font-size:13px;padding:4px 0}
       <button class="ghost" id="today">Aujourd'hui</button>
     </div>
     <div class="row">
-      <button id="fb" class="fs off">Synchronisation</button>
+      <button id="fb" class="fs off">Synchroniser</button>
       <button id="fs" class="fs" title="Partager les données avec un fichier dans un dossier synchronisé (Drive, OneDrive, Dropbox)" hidden></button>
       <button id="exp" title="Télécharger une sauvegarde de toutes les données">Sauvegarder</button>
       <button id="imp" title="Restaurer depuis une sauvegarde">Restaurer</button>
@@ -992,7 +992,7 @@ if(fsync.ok){
 }
 
 
-/* ---------- Synchronisation Firebase ---------- */
+/* ---------- Synchronisation Firebase (code secret du foyer, sans compte) ---------- */
 var FB_CONFIG = {
   apiKey: "AIzaSyCLjCepr6TyFV1kHefcwRDanJjyX5pcPKU",
   authDomain: "paurick-budget.firebaseapp.com",
@@ -1002,29 +1002,28 @@ var FB_CONFIG = {
   appId: "1:858101384833:web:d99e3994725417141a2f80"
 };
 var FB_V="10.12.2";
-var fb={mods:null, app:null, auth:null, db:null, user:null, last:{}, busy:{}, again:{}, ready:false, unsub:[], metaLast:null, err:false};
-function fbCfg(){ if(FB_CONFIG) return FB_CONFIG; try{ return JSON.parse(localStorage.getItem(STORE+"-firebase")||"null"); }catch(e){ return null; } }
-function fbParseCfg(t){
-  var o={}, re=/["']?(apiKey|authDomain|projectId|storageBucket|messagingSenderId|appId|measurementId)["']?\s*:\s*["']([^"']+)["']/g, m;
-  while((m=re.exec(t))) o[m[1]]=m[2];
-  return (o.apiKey&&o.projectId&&o.appId)?o:null;
-}
+var fb={mods:null, app:null, db:null, code:null, last:{}, busy:{}, again:{}, ready:false, unsub:[], metaLast:null, err:false};
+var CODE_KEY=STORE+"-foyer";
+var FOYER="paurick"; /* espace commun, ouvert à tous ceux qui ont la page */
 function fbChip(st,txt){ var b=document.getElementById("fb"); if(b){ b.className="fs "+st; b.textContent=txt; } }
 function fbLoad(){
   if(fb.mods) return Promise.resolve(fb.mods);
   var base="https://www.gstatic.com/firebasejs/"+FB_V+"/";
-  return Promise.all([import(base+"firebase-app.js"),import(base+"firebase-auth.js"),import(base+"firebase-firestore.js")])
-    .then(function(a){ fb.mods={app:a[0],auth:a[1],fs:a[2]}; return fb.mods; });
+  return Promise.all([import(base+"firebase-app.js"),import(base+"firebase-firestore.js")])
+    .then(function(a){ fb.mods={app:a[0],fs:a[1]}; return fb.mods; });
 }
+function newCode(){ var c="abcdefghijkmnpqrstuvwxyz23456789", r=new Uint32Array(24), o=""; crypto.getRandomValues(r); for(var i=0;i<24;i++) o+=c[r[i]%c.length]; return o; }
+function validCode(c){ return typeof c==="string"&&/^[a-z0-9]{20,64}$/.test(c); }
+function shareLink(){ return location.origin+location.pathname+"#foyer="+fb.code; }
+function fbPath(){ return ["foyers",fb.code]; }
 function fbInit(){
-  var cfg=fbCfg(); if(!cfg){ fbChip("off","Configurer la synchro"); return; }
-  fbChip("wait","Connexion…");
+  var m=/[#&]foyer=([a-z0-9]+)/.exec(location.hash||"");
+  if(m&&validCode(m[1])){ try{ localStorage.setItem(CODE_KEY,m[1]); }catch(e){} history.replaceState(null,"",location.pathname+location.search); toast("Espace commun rejoint"); }
+  var code=FOYER;
+  fb.code=code; fbChip("wait","Connexion…");
   fbLoad().then(function(M){
-    if(!fb.app){ fb.app=M.app.initializeApp(cfg); fb.auth=M.auth.getAuth(fb.app); fb.db=M.fs.getFirestore(fb.app); }
-    M.auth.onAuthStateChanged(fb.auth,function(u){
-      fb.user=u;
-      if(u) fbStart(); else { fbStop(); fbChip("off","Se connecter"); }
-    });
+    if(!fb.app){ fb.app=M.app.initializeApp(FB_CONFIG); fb.db=M.fs.getFirestore(fb.app); }
+    fbStart();
   }, function(){ fbChip("off","Hors ligne"); toast("Impossible de joindre Firebase (connexion Internet ?)",true); });
 }
 function fbStop(){ fb.unsub.forEach(function(f){ try{f();}catch(e){} }); fb.unsub=[]; fb.ready=false; fb.last={}; fb.metaLast=null; }
@@ -1033,13 +1032,14 @@ function fbOk(){ if(fbIdle()&&!fb.err) fbChip("ok","✓ Synchronisé"); }
 function fbError(e){
   var c=(e&&e.code)||"";
   fb.err=true;
-  if(c.indexOf("permission-denied")>=0){ fbChip("off","Accès refusé"); toast("Ce compte n'a pas accès aux données : vérifie les règles Firebase (adresses e-mail).",true); }
+  if(c.indexOf("permission-denied")>=0){ fbChip("off","Accès refusé"); toast("Firebase refuse l'accès : vérifie les règles Firestore.",true); }
+  else if(c.indexOf("not-found")>=0){ fbChip("off","Base introuvable"); toast("La base Firestore n'existe pas encore dans ton projet Firebase.",true); }
   else { fbChip("off","Hors ligne"); setTimeout(function(){ fb.err=false; fbPush(); },5000); }
 }
 function fbStart(){
-  var M=fb.mods.fs; fbStop(); fb.err=false;
+  var M=fb.mods.fs, P=fbPath(); fbStop(); fb.err=false;
   fbChip("wait","Synchronisation…");
-  fb.unsub.push(M.onSnapshot(M.doc(fb.db,"meta","settings"),function(d){
+  fb.unsub.push(M.onSnapshot(M.doc(fb.db,P[0],P[1],"meta","settings"),function(d){
     if(!d.exists()) return;
     var x=d.data(); fb.metaLast=JSON.stringify(x);
     var changed=false;
@@ -1049,14 +1049,13 @@ function fbStart(){
     Object.keys(state.months).forEach(function(k){ var m=state.months[k], n=m.depenses.length; m.depenses=m.depenses.filter(function(d2){ return !state.supprimes[d2.id]; }); if(m.depenses.length!==n) changed=true; });
     if(changed){ try{ localStorage.setItem(STORE,JSON.stringify(state)); }catch(e){} softRender2(); }
   },fbError));
-  fb.unsub.push(M.onSnapshot(M.collection(fb.db,"months"),function(snap){
+  fb.unsub.push(M.onSnapshot(M.collection(fb.db,P[0],P[1],"months"),function(snap){
     if(!fb.ready){
       if(snap.metadata&&snap.metadata.fromCache) return;
       fb.ready=true;
       var remote={months:{},supprimes:state.supprimes||{},moisSupprimes:state.moisSupprimes||{}};
       snap.docs.forEach(function(d){ remote.months[d.id]=d.data(); fb.last[d.id]=JSON.stringify(d.data()); });
-      var merged=mergeStates(remote,state);
-      state.months=merged.months;
+      state.months=mergeStates(remote,state).months;
       try{ localStorage.setItem(STORE,JSON.stringify(state)); }catch(e){}
       softRender2(); fbPush(); fbOk(); return;
     }
@@ -1074,7 +1073,7 @@ function fbStart(){
 function fbPushMonth(k){
   if(fb.busy[k]){ fb.again[k]=true; return; }
   fb.busy[k]=true; fbChip("wait","Envoi…");
-  var M=fb.mods.fs, ref=M.doc(fb.db,"months",k), json=null;
+  var M=fb.mods.fs, P=fbPath(), ref=M.doc(fb.db,P[0],P[1],"months",k), json=null;
   M.getDoc(ref).then(function(r){
     var m=state.months[k];
     if(m&&r.exists()){
@@ -1090,63 +1089,56 @@ function fbPushMonth(k){
   .then(function(){ fb.busy[k]=false; if(fb.again[k]){ fb.again[k]=false; fbPushMonth(k); } else fbOk(); });
 }
 function fbPush(){
-  if(!fb.ready||!fb.user||!fb.mods) return;
+  if(!fb.ready||!fb.code||!fb.mods) return;
   var keys={}; Object.keys(state.months).forEach(function(k){keys[k]=1;}); Object.keys(fb.last).forEach(function(k){keys[k]=1;});
   Object.keys(keys).forEach(function(k){ var j=state.months[k]?JSON.stringify(state.months[k]):null; if(j!==(fb.last[k]||null)) fbPushMonth(k); });
   var meta={personnes:state.personnes||2, supprimes:state.supprimes||{}, moisSupprimes:state.moisSupprimes||{}};
   var mj=JSON.stringify(meta);
-  if(mj!==fb.metaLast){ var M=fb.mods.fs; M.setDoc(M.doc(fb.db,"meta","settings"),meta,{merge:true}).then(function(){ fb.metaLast=mj; },fbError); }
+  if(mj!==fb.metaLast){ var M=fb.mods.fs, P=fbPath(); M.setDoc(M.doc(fb.db,P[0],P[1],"meta","settings"),meta,{merge:true}).then(function(){ fb.metaLast=mj; },fbError); }
 }
 var _saveBeforeFb=save;
 save=function(){ _saveBeforeFb(); fbPush(); };
+function copyText(t){ if(navigator.clipboard&&navigator.clipboard.writeText) return navigator.clipboard.writeText(t); return Promise.reject(); }
 function fbDialog(){
-  var cfg=fbCfg();
   var ov=document.createElement("div"); ov.className="modal";
   var h='<div class="mbox" role="dialog" aria-modal="true"><h2>Synchronisation</h2>';
-  if(!cfg||ov._cfgEdit){
-    h+='<p class="muted">Colle ici la configuration de ton projet Firebase (le bloc <code>firebaseConfig</code> donné par la console Firebase).</p>'+
-       '<textarea id="fbcfg" placeholder="const firebaseConfig = { apiKey: &quot;…&quot;, … };"></textarea>'+
-       '<div class="row" style="justify-content:flex-end;margin-top:12px"><button data-b="cancel">Annuler</button><button class="primary" data-b="savecfg">Enregistrer</button></div>';
-  } else if(!fb.user){
-    h+='<p class="muted">Connecte-toi avec ton compte (créé dans Firebase → Authentication).</p>'+
-       '<form id="fblogin" autocomplete="on"><label class="muted" for="fbe">E-mail</label><input id="fbe" type="email" autocomplete="username" required>'+
-       '<label class="muted" for="fbp" style="display:block;margin-top:8px">Mot de passe</label><input id="fbp" type="password" autocomplete="current-password" required>'+
-       '<p id="fberr" class="neg" style="margin:8px 0 0;font-size:13px"></p>'+
-       '<div class="row" style="justify-content:space-between;margin-top:12px">'+(FB_CONFIG?'<span></span>':'<button type="button" class="ghost" data-b="editcfg">Changer la configuration</button>')+'<span class="row"><button type="button" data-b="cancel">Annuler</button><button class="primary" type="submit">Se connecter</button></span></div></form>';
+  if(!fb.code){
+    h+='<p class="muted">Pour partager vos comptes entre vos téléphones et ordinateurs, créez votre espace commun une seule fois, puis envoyez le lien à l\'autre.</p>'+
+       '<button class="opt" data-b="create"><b>Créer notre espace commun</b><span>À faire par un seul de vous deux. Tes données actuelles y sont envoyées.</span></button>'+
+       '<div class="opt" style="cursor:default"><b>J\'ai reçu un lien ou un code</b><span>Ouvre simplement le lien reçu, ou colle-le ici :</span>'+
+       '<div class="row" style="margin-top:8px;flex-wrap:nowrap"><input id="fbjoin" placeholder="Lien ou code" autocomplete="off"><button class="primary" data-b="join">Rejoindre</button></div></div>'+
+       '<div class="row" style="justify-content:flex-end;margin-top:12px"><button data-b="cancel">Fermer</button></div>';
   } else {
-    h+='<p>Connecté : <b>'+esc(fb.user.email||"")+'</b></p><p class="muted">Tout ce que vous saisissez est partagé entre vos appareils.</p>'+
-       '<div class="row" style="justify-content:space-between;margin-top:12px"><button class="ghost" data-b="logout" style="color:var(--bad)">Se déconnecter</button><button data-b="cancel">Fermer</button></div>';
+    h+='<p class="muted">Vos appareils sont reliés à votre espace commun. Pour ajouter un appareil (téléphone de ta femme, autre ordinateur), ouvre-y ce lien <b>une fois</b> :</p>'+
+       '<div class="row" style="flex-wrap:nowrap"><input id="fblink" readonly value="'+esc(shareLink())+'"><button class="primary" data-b="copy">Copier</button></div>'+
+       '<p class="muted" style="font-size:12px;margin-top:8px">Ce lien donne accès à vos comptes : ne l\'envoie qu\'à ta femme (SMS, WhatsApp…).</p>'+
+       '<div class="row" style="justify-content:space-between;margin-top:12px"><button class="ghost" data-b="leave" style="color:var(--bad)">Quitter l\'espace sur cet appareil</button><button data-b="cancel">Fermer</button></div>';
   }
   ov.innerHTML=h+'</div>'; document.body.appendChild(ov);
   var close=function(){ ov.remove(); if(fsync.pending) softRender2(); };
-  var f=ov.querySelector("#fblogin");
-  if(f){ setTimeout(function(){ ov.querySelector("#fbe").focus(); },30);
-    f.addEventListener("submit",function(e){
-      e.preventDefault();
-      var err=ov.querySelector("#fberr"); err.textContent="";
-      fbLoad().then(function(M){
-        return M.auth.signInWithEmailAndPassword(fb.auth,ov.querySelector("#fbe").value.trim(),ov.querySelector("#fbp").value);
-      }).then(function(){ close(); toast("Connecté"); }, function(e2){
-        var c=(e2&&e2.code)||"";
-        err.textContent=/invalid-credential|wrong-password|user-not-found|invalid-email/.test(c)?"E-mail ou mot de passe incorrect.":(/network/.test(c)?"Pas de connexion Internet.":"Connexion impossible ("+c+").");
-      });
-    });
-  }
   ov.addEventListener("click",function(e){
     if(e.target===ov){ close(); return; }
     var b=e.target.closest("[data-b]"); if(!b) return; var a=b.dataset.b;
     if(a==="cancel") close();
-    else if(a==="editcfg"){ close(); try{ localStorage.removeItem(STORE+"-firebase"); }catch(x){} if(!FB_CONFIG){ location.reload(); } }
-    else if(a==="logout"){ fb.mods.auth.signOut(fb.auth).then(function(){ close(); toast("Déconnecté"); }); }
-    else if(a==="savecfg"){
-      var c=fbParseCfg(ov.querySelector("#fbcfg").value);
-      if(!c){ alert("Je ne trouve pas apiKey, projectId et appId dans ce texte. Copie tout le bloc firebaseConfig."); return; }
-      try{ localStorage.setItem(STORE+"-firebase",JSON.stringify(c)); }catch(x){}
-      close(); fbInit(); setTimeout(fbDialog,400);
+    else if(a==="create"){ var c=newCode(); try{ localStorage.setItem(CODE_KEY,c); }catch(x){} close(); fbInit(); setTimeout(fbDialog,300); }
+    else if(a==="join"){
+      var v=(ov.querySelector("#fbjoin").value||"").trim(), mm=/foyer=([a-z0-9]+)/.exec(v), code=mm?mm[1]:v.toLowerCase();
+      if(!validCode(code)){ alert("Ce lien ou ce code n'est pas valide."); return; }
+      try{ localStorage.setItem(CODE_KEY,code); }catch(x){} close(); fbInit(); toast("Espace commun rejoint");
     }
+    else if(a==="copy"){ var inp=ov.querySelector("#fblink"); copyText(inp.value).then(function(){ toast("Lien copié"); },function(){ inp.select(); toast("Sélectionné : fais Ctrl+C"); }); }
+    else if(a==="leave"){ if(confirm("Cet appareil ne sera plus synchronisé (tes données restent ici). Continuer ?")){ fbStop(); fb.code=null; try{ localStorage.removeItem(CODE_KEY); }catch(x){} fbChip("off","Synchroniser"); close(); } }
   });
 }
-document.getElementById("fb").onclick=fbDialog;
+document.getElementById("fb").onclick=function(){
+  var ov=document.createElement("div"); ov.className="modal";
+  ov.innerHTML='<div class="mbox" role="dialog" aria-modal="true"><h2>Synchronisation</h2>'+
+    '<p class="muted">Tout ce que vous saisissez est enregistré en ligne et partagé automatiquement entre tous les appareils qui ouvrent cette page.</p>'+
+    '<p class="muted">État : <b>'+esc(document.getElementById("fb").textContent)+'</b></p>'+
+    '<div class="row" style="justify-content:flex-end;margin-top:12px"><button data-b="cancel">Fermer</button></div></div>';
+  document.body.appendChild(ov);
+  ov.addEventListener("click",function(e){ if(e.target===ov||e.target.closest("[data-b]")) ov.remove(); });
+};
 fbInit();
 
 render();
