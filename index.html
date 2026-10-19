@@ -276,19 +276,22 @@ function autoPay(){
 
 /* Ajout de « Prêts » et « Autres » aux mois existants (une seule fois par mois) */
 function maj2(m){
-  if(!m||m.maj2) return false;
+  if(!m||(m.maj||0)>=3) return false;
   m.fixes=m.fixes||[];
-  if(!m.fixes.some(function(f){return f.nom==="Prêts";})){
+  var addFix=function(nom){
+    if(m.fixes.some(function(f){return f.nom===nom;})) return;
     var i=-1; m.fixes.forEach(function(f,j){ if(f.nom==="Epargnes") i=j; });
-    var row={nom:"Prêts",montant:0,jour:"",paye:false};
+    var row={nom:nom,montant:0,jour:"",paye:false};
     if(i>=0) m.fixes.splice(i,0,row); else m.fixes.push(row);
-  }
+  };
+  if(!m.maj2) addFix("Prêts");
+  addFix("Frais bancaires");
   (m.budgets||[]).forEach(function(b){ if(b.cat==="Autres"){ b.sous=b.sous||[]; if(b.sous.indexOf("Autres")<0) b.sous.push("Autres"); } });
-  m.maj2=true; return true;
+  m.maj2=true; m.maj=3; return true;
 }
 /* Mise à jour des mois créés avec une ancienne version */
 (function upgrade(){
-  var FIXES=["Nourrice","SAUR","Assurance","Total","Jardinier","Verisure","Cantine - Garderie","Taxe","Téléphone & Télés","Prêts","Epargnes"];
+  var FIXES=["Nourrice","SAUR","Assurance","Total","Jardinier","Verisure","Cantine - Garderie","Taxe","Téléphone & Télés","Prêts","Frais bancaires","Epargnes"];
   var SOUS=["Restaurants","Vêtements","Travaux","Cadeaux","Coiffeur","Pharmacie","Vacances","Autres"];
   var REN={"Course":"Courses","Essence":"Essences"};
   Object.keys(state.months).forEach(function(k){
@@ -758,9 +761,9 @@ main.addEventListener("click",function(e){
         revenus:[{nom:"Salaire 1",montant:0,virement:0,direct:false},{nom:"Salaire 2",montant:0,virement:0,direct:false},{nom:"CAF",montant:0,virement:0,direct:true}],
         credits:L(["Immo 1","Immo 2","Voiture"],{jour:"",paye:false}),
         epargne:[],
-        fixes:L(["Nourrice","SAUR","Assurance","Total","Jardinier","Verisure","Cantine - Garderie","Taxe","Téléphone & Télés","Prêts","Epargnes"],{jour:"",paye:false}),
+        fixes:L(["Nourrice","SAUR","Assurance","Total","Jardinier","Verisure","Cantine - Garderie","Taxe","Téléphone & Télés","Prêts","Frais bancaires","Epargnes"],{jour:"",paye:false}),
         budgets:[{cat:"Courses",budget:0,sous:[]},{cat:"Essences",budget:0,sous:[]},{cat:"Autres",budget:0,sous:["Restaurants","Vêtements","Travaux","Cadeaux","Coiffeur","Pharmacie","Vacances","Autres"]}],
-        rembs:[{nom:"Nourrice",montant:0}],depenses:[],notes:"",soldePrec:"",maj2:true};
+        rembs:[{nom:"Nourrice",montant:0}],depenses:[],notes:"",soldePrec:"",maj2:true,maj:3};
       ui.tab="bud"; saveUI();
       save(); render();
     }
